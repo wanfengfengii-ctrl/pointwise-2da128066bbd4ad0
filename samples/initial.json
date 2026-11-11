@@ -1,0 +1,62 @@
+{
+  "dimensions": [
+    {
+      "id": "d0",
+      "rev": 1,
+      "customer": "A",
+      "at": 0,
+      "region": "east",
+      "deleted": false
+    },
+    {
+      "id": "d1",
+      "rev": 1,
+      "customer": "A",
+      "at": 100,
+      "region": "west",
+      "deleted": false
+    },
+    {
+      "id": "db",
+      "rev": 1,
+      "customer": "B",
+      "at": 0,
+      "region": "north",
+      "deleted": false
+    }
+  ],
+  "facts": [
+    {
+      "id": "f0",
+      "rev": 1,
+      "customer": "A",
+      "at": 10,
+      "cents": 100,
+      "deleted": false
+    },
+    {
+      "id": "f1",
+      "rev": 1,
+      "customer": "A",
+      "at": 60,
+      "cents": 250,
+      "deleted": false
+    },
+    {
+      "id": "f2",
+      "rev": 1,
+      "customer": "A",
+      "at": 110,
+      "cents": -30,
+      "deleted": false
+    },
+    {
+      "id": "fb",
+      "rev": 1,
+      "customer": "B",
+      "at": 60,
+      "cents": 700,
+      "deleted": false
+    }
+  ]
+}

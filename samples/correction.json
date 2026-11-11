@@ -1,0 +1,6 @@
+{
+  "dimensions": [
+    {"id": "d1", "rev": 2, "customer": "A", "at": 50, "region": "west", "deleted": false}
+  ],
+  "facts": []
+}
