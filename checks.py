@@ -206,10 +206,59 @@ def disjoint_history():
     s.close()
 
 
+def restart_replay():
+    import os
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        s = Store(path)
+        initial = json.loads(Path("samples/initial.json").read_text(encoding="utf-8"))
+        correction = json.loads(Path("samples/correction.json").read_text(encoding="utf-8"))
+        apply_batch(s, initial)
+        apply_batch(s, correction)
+        expect(s, [r("f0", "east", 100), r("f1", "west", 250),
+                   r("f2", "west", -30), r("fb", "north", 700)],
+               [a("east", 100, 1), a("north", 700, 1), a("west", 220, 2)])
+        before = all_tables(s)
+        s.close()
+        s = Store(path)
+        out = apply_batch(s, correction)
+        require(out["examined_fact_ids"] == [], "restart replay read facts")
+        require(all_tables(s) == before, "restart replay changed tables")
+        s.close()
+    finally:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+def input_order():
+    seed_dims = [dim("base"), dim("turn", at=100, region="west")]
+    seed_facts = [fact("keep", at=10), fact("x", at=60, cents=250),
+                  fact("y", at=70, cents=50)]
+    patch_dims = [dim("turn", rev=2, at=50, region="west")]
+    patch_facts = [fact("x", rev=2, at=86401, cents=90),
+                   fact("y", rev=2, at=70, cents=50, deleted=True)]
+    results = []
+    for reverse in (False, True):
+        s = Store()
+        apply_batch(s, batch(seed_dims, seed_facts))
+        apply_batch(s, batch(list(reversed(patch_dims)) if reverse else patch_dims,
+                             list(reversed(patch_facts)) if reverse else patch_facts))
+        expect(s, [r("keep", "east", 100), r("x", "west", 90, 1)],
+               [a("east", 100, 1), a("west", 90, 1, 1)])
+        results.append(all_tables(s))
+        s.close()
+    require(results[0] == results[1], "batch order changed final state")
+
+
 def repair():
     failures = []
     for case in (moved_boundary, relocated_event, winner_retraction,
-                 fact_reassignment, mixed_batch, disjoint_history):
+                 fact_reassignment, mixed_batch, disjoint_history,
+                 restart_replay, input_order):
         try:
             case()
         except AssertionError as exc:

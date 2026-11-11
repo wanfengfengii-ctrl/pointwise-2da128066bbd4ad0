@@ -1,4 +1,4 @@
-from .temporal import build_timeline, region_at, UNASSIGNED
+from .temporal import build_timeline, changed_intervals, region_at, UNASSIGNED
 
 
 def _integer(value, low, high):
@@ -33,45 +33,78 @@ def validate(batch):
                 raise ValueError("INVALID_RECORD")
 
 
+def _desired_resolution(store, timelines, ident, fact):
+    if fact["deleted"]:
+        return None
+    customer = fact["customer"]
+    if customer not in timelines:
+        timelines[customer] = store.timeline(customer)
+    return {"id": ident, "day": fact["at"] // 86400,
+            "region": region_at(timelines[customer], fact["at"]),
+            "cents": fact["cents"]}
+
+
 def apply_batch(store, batch, fail_at=None):
     validate(batch)
     store.examined.clear()
     db = store.db
     db.execute("BEGIN IMMEDIATE")
     try:
-        dirty = {}
-        explicit = set()
+        affected = set()
+        accepted_facts = set()
+
+        # Apply source records.  Only a genuinely newer revision is accepted;
+        # the point lookup used for the version decision is not a traced read.
         for event in batch["dimensions"]:
+            old = db.execute("SELECT * FROM source_dim WHERE id=?",
+                             (event["id"],)).fetchone()
             if store.accept("source_dim", event):
-                customer = event["customer"]
-                dirty[customer] = min(dirty.get(customer, event["at"]), event["at"])
+                affected.add(event["customer"])
+                if old is not None:
+                    affected.add(old["customer"])
         for fact in batch["facts"]:
             if store.accept("facts", fact):
-                explicit.add(fact["id"])
-        for customer in sorted(dirty):
-            store.replace_timeline(customer, build_timeline(store.dimension_events(customer)))
+                accepted_facts.add(fact["id"])
+
+        # Rebuild the complete dimension timeline for every old and new
+        # customer touched by an accepted dimension revision.  Remember the
+        # before/after region functions to derive the changed time set D.
+        changes = []
+        for customer in sorted(affected):
+            before = store.timeline(customer)
+            after = build_timeline(store.dimension_events(customer))
+            store.replace_timeline(customer, after)
+            for lo, hi in changed_intervals(before, after):
+                changes.append((customer, lo, hi))
         if fail_at == "after_intervals":
             raise RuntimeError("INJECTED_AFTER_INTERVALS")
-        # Original loader was deployed for ordered, append-only source exports.
-        work = {ident: store.fact(ident) for ident in sorted(explicit)}
-        for customer, lo in sorted(dirty.items()):
-            for fact in store.facts_in(customer, lo):
+
+        # Attribution must be recomputed for exactly: newly accepted fact
+        # versions (wherever they moved) plus every fact whose final source
+        # coordinates fall inside D.  facts_in is called per changed segment,
+        # never across an unchanged gap or into an unrelated infinite tail.
+        work = {}
+        for ident in sorted(accepted_facts):
+            work[ident] = store.fact(ident)
+        for customer, lo, hi in changes:
+            for fact in store.facts_in(customer, lo, hi):
                 work[fact["id"]] = fact
+
         timelines = {}
         for ident in sorted(work):
             fact = work[ident]
-            if fact["deleted"]:
-                db.execute("DELETE FROM resolved WHERE id=?", (ident,))
-                continue
-            customer = fact["customer"]
-            if customer not in timelines:
-                timelines[customer] = store.timeline(customer)
-            row = {"id": ident, "day": fact["at"] // 86400,
-                   "region": region_at(timelines[customer], fact["at"]), "cents": fact["cents"]}
+            desired = _desired_resolution(store, timelines, ident, fact)
             previous = store.resolution(ident)
-            if previous != row:
-                store.save_resolution(row)
-                store.add_daily(row, 1)
+            if previous == desired:
+                continue
+            # Replace the old contribution instead of accumulating a new one.
+            if previous is not None:
+                store.add_daily(previous, -1)
+            if desired is not None:
+                store.save_resolution(desired)
+                store.add_daily(desired, 1)
+            else:
+                db.execute("DELETE FROM resolved WHERE id=?", (ident,))
         if fail_at == "after_resolved":
             raise RuntimeError("INJECTED_AFTER_RESOLVED")
         db.execute("COMMIT")
@@ -85,5 +118,5 @@ def snapshot(store):
     db = store.db
     return {
         "resolved": [dict(r) for r in db.execute("SELECT * FROM resolved ORDER BY id")],
-        "daily": [dict(r) for r in db.execute("SELECT * FROM daily ORDER BY day,region")]
+        "daily": [dict(r) for r in db.execute("SELECT * FROM daily ORDER BY day,region")],
     }
